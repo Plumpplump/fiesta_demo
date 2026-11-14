@@ -1,0 +1,12 @@
+1. This project is a computer vision project.
+2. The project will detect people wearing my school's school uniform.
+3. When the person enters the camera view, the camera will put a rectangle around the torso.
+4. The camera then gets an image of the person's torso, and asks the AI to compare with the school uniform.
+5. I will provide sample images of the school uniform of my school.
+6. To prevent the camera from overloading, if there are many people, you only detect people when the person's area is more than 15% of the total camera view.
+7. You also put a box around his eye area to detect if they are wearing glasses or not.
+8. You display the uniform as Person1 in uniform or not in uniform, same goes for glasses.
+9. The camera view will be put on the left of the app, taking 60% of width the GUI. Detection status on the right hand side.
+10. I intend to use Yolo model to detect a person, and http://huggingface.co/timm/MobileCLIP2-B-OpenCLIP to detect the type of clothing, and glasses.
+11. Let me know whether this models are appropriate for this project because your requirement is the project can be run in desktop or web or mobile. The final project will be run on a Macbook Air M4.
+12. The GUI should be Python Flet and then we use the Flet MCP for syntax checking

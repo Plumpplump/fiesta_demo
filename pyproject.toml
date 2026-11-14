@@ -1,0 +1,60 @@
+[project]
+name = "fiesta-demo"
+version = "0.1.0"
+description = "Detect people in a live camera view and label them as wearing the school uniform and glasses."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Flet developer", email = "you@example.com" }
+]
+dependencies = [
+    "flet>=1.0.0",
+    "numpy>=2.0",
+    "pillow>=11.0",
+    "opencv-python>=4.10,<5",
+    "onnxruntime>=1.20",
+]
+
+[dependency-groups]
+dev = [
+    "flet-cli>=1.0.0",
+    "flet-desktop>=1.0.0",
+    "flet-web>=1.0.0",
+    # Integration testing with `flet test` / pytest. The `test` extra brings in
+    # pytest, pytest-asyncio and the screenshot-comparison dependencies.
+    "flet[test]>=1.0.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+# One-time model export only (`scripts/export_models.py`). torch/ultralytics are
+# deliberately NOT runtime dependencies: the app loads ONNX files with
+# onnxruntime, which keeps `flet build` and startup fast.
+export = [
+    "torch>=2.4",
+    "ultralytics>=8.3",
+    "open-clip-torch>=2.26",
+]
+
+# NOTE: on this Windows machine the dependencies are installed into the shared
+# virtualenv "C:\Users\david\OneDrive\Python Coding\myvenv" (explicit user
+# choice), so `uv run` would build a *separate* project .venv. Run the app with
+# `myvenv\Scripts\flet.exe run` (see README). This file stays the source of
+# truth for a clean environment, e.g. `uv sync` on the MacBook.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: needs a Flutter device toolchain (run via `flet test`)",
+]
+
+[tool.flet]
+org = "com.mycompany"
+product = "fiesta-demo"
+company = "Flet"
+copyright = "Copyright (C) 2023-2026 by Flet"
+
+[tool.flet.app]
+path = "src"

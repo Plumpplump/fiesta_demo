@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environments / secrets
+.env
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+src/assets/models/
+
+
+# Flet
+.flet/
+build/
+storage/
+
+# Model export leftovers (the .onnx files in src/assets/models are kept)
+yolo11n.pt
+*.pt
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
