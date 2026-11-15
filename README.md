@@ -45,7 +45,14 @@ What you see while it runs:
 - **Right (40 %)**: one card per judged person, full height, with big badges.
 - **Terminal**: every verdict and score (`p=...`), so a wrong call is explainable.
 
-![Fiesta AI Vision Demo running: a person boxed in yellow, their shirt crop in green, and a Person2 card reading "not in uniform" and "glasses"](docs/app-screenshot.jpg)
+<p align="center">
+  <a href="docs/app-screenshot.jpg" title="Open the full-size screenshot">
+    <img src="docs/app-screenshot.jpg" width="820"
+         alt="Fiesta AI Vision Demo running: a person boxed in yellow, their shirt crop in green, and a Person2 card reading 'not in uniform' and 'glasses'">
+  </a>
+</p>
+
+<p align="center"><em>Live session - yellow person box, green shirt crop, Person2 card. Click for the full-size image.</em></p>
 
 The app degrades instead of crashing when something is missing: no YOLO means no
 people, no CLIP means the colour check still gives a uniform verdict and glasses
