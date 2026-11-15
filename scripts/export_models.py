@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """One-time model export: YOLO11n + MobileCLIP2-B (+ text prompt vectors).
 
 Run from the project root:
@@ -33,25 +34,58 @@ CLIP_HUB_ID = "hf-hub:timm/MobileCLIP2-B-OpenCLIP"
 
 UNIFORM_PROMPTS = {
     "in uniform": [
-        "a photo of a student wearing a white school uniform shirt with red trim",
-        "a person wearing a white polo shirt school uniform with a school crest",
+        # Prompt wording is part of the model (measured): generic uniform
+        # descriptions separate cleanly, school-specific ones add the trim.
+        "a white polo shirt",
+        "a white polo shirt with a school badge",
+        "a white shirt with a crest",
+        "a school uniform polo shirt",
+        "a white collared school shirt",
+        "a school uniform",
+        "a person wearing a school uniform",
+        "a student in school uniform",
+        "a white school uniform shirt with red trim",
         "a student wearing a school PE shirt",
     ],
     "not in uniform": [
-        "a person wearing casual clothes, not a school uniform",
+        "a grey t-shirt",
+        "a plain t-shirt",
+        "a casual grey shirt",
+        "a green t-shirt",
+        "a plain white t-shirt",
+        "a white t-shirt without a logo",
+        "casual clothes",
+        "a person in casual clothes",
+        "a hoodie",
         "a photo of someone in a plain coloured t-shirt",
         "a person in home clothes",
     ],
 }
 
 GLASSES_PROMPTS = {
+    # Thin/rimless frames are the failure mode, so the bank explicitly names
+    # them. Measured on 13 public portraits: the eye-band + face pair separates
+    # at 0.15 with zero false positives.
     "glasses": [
+        "a face with eyeglasses",
+        "a face with spectacles",
+        "a person wearing sunglasses",
+        "a face wearing glasses",
         "a close-up of a person wearing eyeglasses",
         "a face with glasses frames over the eyes",
+        "a face wearing thin metal frame glasses",
+        "a face with rimless glasses",
+        "eyeglasses with a thin wire frame on a face",
+        "a person wearing clear prescription glasses",
     ],
     "no glasses": [
+        "a face with no eyewear",
+        "a person with clear eyes",
+        "a face without spectacles",
         "a close-up of a person without glasses",
         "a face with bare eyes and no frames",
+        "eyes without glasses",
+        "a face with nothing covering the eyes",
     ],
 }
 
@@ -61,9 +95,12 @@ def export_yolo(target: Path) -> bool:
 
     print("exporting YOLO11n -> ONNX ...")
     model = YOLO("yolo11n.pt")
-    exported = model.export(format="onnx", imgsz=640, opset=17)
-    exported_path = Path(exported)
-    shutil.copyfile(exported_path, target)
+    exported = Path(model.export(format="onnx", imgsz=640, opset=17))
+    shutil.copyfile(exported, target)
+    # ultralytics drops the .onnx next to the weights in the working directory;
+    # remove that leftover so only src/assets/models holds a usable model.
+    if exported.resolve() != target.resolve():
+        exported.unlink(missing_ok=True)
     print(f"  wrote {target} ({target.stat().st_size / 1e6:.1f} MB)")
     return True
 
@@ -79,6 +116,28 @@ def export_yunet(target: Path) -> bool:
     urllib.request.urlretrieve(YUNET_URL, target)
     print(f"  wrote {target} ({target.stat().st_size / 1e3:.0f} KB)")
     return True
+
+
+def _save_vision_meta(model, image_size: int) -> None:
+    """Record the checkpoint's preprocessing next to the vision ONNX."""
+    import open_clip
+
+    cfg: dict = {}
+    try:
+        cfg = open_clip.get_model_preprocess_cfg(model) or {}
+    except Exception as exc:  # pragma: no cover - open_clip version specific
+        print(f"  preprocess config unavailable ({exc}); assuming 0/1")
+    size = cfg.get("size") or image_size
+    if isinstance(size, (tuple, list)):
+        size = size[-1]
+    meta = {
+        "image_size": int(size),
+        "mean": [float(v) for v in cfg.get("mean", (0.0, 0.0, 0.0))],
+        "std": [float(v) for v in cfg.get("std", (1.0, 1.0, 1.0))],
+    }
+    path = MODELS / "mobileclip2_b_vision.json"
+    path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"  wrote {path.name}: size={meta['image_size']} mean={meta['mean']} std={meta['std']}")
 
 
 def _save_prompts(encoder, tokenizer, prompts: dict[str, list[str]], stem: str) -> None:
@@ -125,6 +184,11 @@ def export_clip() -> bool:
 
     vision_path = MODELS / "mobileclip2_b_vision.onnx"
     text_path = MODELS / "mobileclip2_b_text.onnx"
+
+    # The runtime must apply exactly the preprocessing the checkpoint was
+    # trained with. MobileCLIP2 is 0/1 (no CLIP mean/std), so guessing CLIP's
+    # constants in clip.py would silently skew every similarity score.
+    _save_vision_meta(model, int(image_size))
 
     class VisionOnly(torch.nn.Module):
         def __init__(self, visual):

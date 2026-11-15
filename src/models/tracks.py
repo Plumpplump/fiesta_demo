@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Cross-frame person tracking.
 
 The expensive classifiers run once per person, not once per frame: a track is
@@ -8,19 +9,33 @@ walked into view), and only unfilled or stale tracks get classified again.
 from __future__ import annotations
 
 from . import constants as C
-from .geometry import iou, sub_box
+from .geometry import iou
 from .types import Box, Track
 
 
-def torso_of(box: Box) -> Box:
-    """Middle band of a person box: the torso, without head or legs."""
-    return sub_box(
-        box,
-        top=C.TORSO_TOP,
-        bottom=C.TORSO_BOTTOM,
-        left=C.TORSO_LEFT,
-        right=C.TORSO_RIGHT,
+def torso_of(box: Box, frame_height: int | None = None) -> Box:
+    """Band of a person box that holds the shirt.
+
+    A close-up webcam box is head + shoulders, so the shirt sits low
+    (40-92% of the box); a full-body box has it in the upper-middle (12-62%).
+    Using one fixed band crops the face on close-ups, which is the biggest
+    accuracy killer measured in the sibling project.
+    """
+    box_height = box[3] - box[1]
+    close_up = (
+        frame_height is not None
+        and frame_height > 0
+        and box_height / float(frame_height) >= C.TORSO_CLOSE_UP_RATIO
     )
+    top, bottom = (
+        (C.TORSO_TOP_CLOSE, C.TORSO_BOTTOM_CLOSE)
+        if close_up
+        else (C.TORSO_TOP_FULL, C.TORSO_BOTTOM_FULL)
+    )
+    # A little margin outside the box keeps the shoulders/sleeves in the crop.
+    x1, y1, x2, y2 = box
+    margin = C.TORSO_SIDE_MARGIN * (x2 - x1)
+    return (x1 - margin, y1 + top * box_height, x2 + margin, y1 + bottom * box_height)
 
 
 class TrackManager:
@@ -28,15 +43,22 @@ class TrackManager:
         self,
         iou_threshold: float = C.TRACK_IOU_THRESHOLD,
         max_misses: int = C.TRACK_MAX_MISSES,
+        confirm_hits: int = C.TRACK_CONFIRM_HITS,
     ):
         self.iou_threshold = iou_threshold
         self.max_misses = max_misses
+        self.confirm_hits = confirm_hits
         self._tracks: list[Track] = []
         self._next_track_id = 1
 
     @property
     def tracks(self) -> list[Track]:
         return list(self._tracks)
+
+    @property
+    def visible(self) -> list[Track]:
+        """Confirmed tracks seen in the current frame (what the preview draws)."""
+        return [t for t in self._tracks if t.confirmed and t.misses == 0]
 
     def reset(self) -> None:
         self._tracks = []
@@ -49,11 +71,17 @@ class TrackManager:
             index += 1
         return index
 
-    def update(self, boxes: list[Box], now: float) -> tuple[list[Track], list[Track]]:
+    def update(
+        self,
+        boxes: list[Box],
+        now: float,
+        frame_height: int | None = None,
+    ) -> tuple[list[Track], list[Track]]:
         """Match boxes to tracks.
 
-        Returns ``(active_tracks, new_tracks)``. ``new_tracks`` are the people
-        that appeared in this frame and still need to be classified.
+        Returns ``(active_tracks, new_tracks)``. ``active_tracks`` are the
+        confirmed people visible in this frame; ``new_tracks`` still need a
+        classification once they collect ``confirm_hits`` detections.
         """
         tracks = self._tracks
         assigned: dict[int, int] = {}
@@ -80,10 +108,11 @@ class TrackManager:
                 continue
             box = boxes[box_index]
             track.box = box
-            track.torso_box = torso_of(box)
+            track.torso_box = torso_of(box, frame_height)
             track.hits += 1
             track.misses = 0
             track.last_seen = now
+            track.confirmed = track.hits >= self.confirm_hits
 
         self._tracks = [t for t in tracks if t.misses <= self.max_misses]
 
@@ -94,7 +123,8 @@ class TrackManager:
                 track_id=self._next_track_id,
                 label_index=self._free_label_index(),
                 box=box,
-                torso_box=torso_of(box),
+                torso_box=torso_of(box, frame_height),
+                confirmed=self.confirm_hits <= 1,
                 first_seen=now,
                 last_seen=now,
             )
@@ -102,5 +132,5 @@ class TrackManager:
             self._tracks.append(track)
             new_tracks.append(track)
 
-        active = [t for t in self._tracks if t.misses == 0]
+        active = [t for t in self._tracks if t.confirmed and t.misses == 0]
         return active, new_tracks

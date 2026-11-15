@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Integration smoke test: the real app mounts its 60/40 layout.
 
 The ``flet_app`` fixture comes from the flet pytest plugin; never define your

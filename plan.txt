@@ -10,3 +10,4 @@
 10. I intend to use Yolo model to detect a person, and http://huggingface.co/timm/MobileCLIP2-B-OpenCLIP to detect the type of clothing, and glasses.
 11. Let me know whether this models are appropriate for this project because your requirement is the project can be run in desktop or web or mobile. The final project will be run on a Macbook Air M4.
 12. The GUI should be Python Flet and then we use the Flet MCP for syntax checking
+Author: David Li, SISHK

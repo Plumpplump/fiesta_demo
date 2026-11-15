@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Controls only: the 60/40 camera + status layout. No detection logic here."""
 
 from __future__ import annotations
@@ -6,6 +7,7 @@ import base64
 
 import flet as ft
 
+from models import constants as C
 from models.types import CHECKING, GLASSES, IN_UNIFORM, NOT_IN_UNIFORM, UNSURE
 
 # 1x1 dark PNG: ft.Image rejects an empty src ("A valid src value must be
@@ -27,6 +29,35 @@ _GLASSES_COLORS = {
     UNSURE: "#EF6C00",
 }
 
+# One vivid colour per person, picked from the track id so it stays stable
+# across redraws. Deliberately no white or light grey: the card background is
+# light and the label must stay readable.
+_PERSON_COLORS = (
+    "#D32F2F",  # red
+    "#7B1FA2",  # purple
+    "#1976D2",  # blue
+    "#00897B",  # teal
+    "#F57C00",  # orange
+    "#5D4037",  # brown
+    "#C2185B",  # pink
+    "#388E3C",  # green
+    "#512DA8",  # deep purple
+    "#0288D1",  # light blue
+    "#E64A19",  # deep orange
+    "#00796B",  # dark teal
+)
+
+
+def person_color(track_id: int) -> str:
+    """Stable, vivid colour for one person (never white/light grey)."""
+    return _PERSON_COLORS[int(track_id) % len(_PERSON_COLORS)]
+
+
+# Sliders are validated by Flet against max, and Flutter's endpoint arithmetic
+# can overshoot by one float ulp (0.8500000000000001). A hair of margin keeps
+# the far-right position legal; the handlers clamp to the real upper bound.
+_SLIDER_MARGIN = 0.001
+
 
 class AppView:
     def __init__(self):
@@ -43,13 +74,20 @@ class AppView:
         self.placeholder = ft.Text(
             "Camera starting...", key="placeholder", color="#9E9E9E", size=14
         )
+        # Every camera frame is a new image provider. With gapless_playback off
+        # Flutter paints *nothing* while the next JPEG decodes, which at 12 fps
+        # looks like the video is flickering; gapless_playback keeps the
+        # previous frame on screen until the new one is ready.
         self.preview = ft.Image(
             _PLACEHOLDER_PNG,
             key="preview",
             fit=ft.BoxFit.CONTAIN,
+            filter_quality=ft.FilterQuality.MEDIUM,
+            gapless_playback=True,
             expand=True,
             visible=False,
         )
+        self._frame_shown = False
         self.preview_box = ft.Container(
             key="preview_box",
             expand=True,
@@ -61,28 +99,80 @@ class AppView:
 
         self.fps_text = ft.Text("", key="fps", size=12, color="#9E9E9E")
         self.camera_button = ft.FilledButton(
-            "Stop camera", key="camera_button", on_click=None
+            "Start camera", key="camera_button", on_click=None
         )
         self.slider_label = ft.Text(
-            "", key="threshold_label", size=12, color="#616161"
+            "", key="threshold_label", size=13, color="#616161"
         )
         self.threshold_slider = ft.Slider(
             key="uniform_threshold",
-            min=0.05,
-            max=0.60,
+            min=C.UNIFORM_THRESHOLD_MIN,
+            max=C.UNIFORM_THRESHOLD_MAX + _SLIDER_MARGIN,
             divisions=55,
-            value=0.22,
+            value=0.50,
+            on_change=None,
+            expand=True,
+        )
+        self.glasses_slider_label = ft.Text(
+            "", key="glasses_threshold_label", size=13, color="#616161"
+        )
+        self.glasses_slider = ft.Slider(
+            key="glasses_threshold",
+            min=C.GLASSES_THRESHOLD_MIN,
+            max=C.GLASSES_THRESHOLD_MAX + _SLIDER_MARGIN,
+            divisions=58,
+            value=0.15,
             on_change=None,
             expand=True,
         )
 
-        self.summary = ft.Text("No one in view", key="summary", size=14, color="#616161")
+        self.summary = ft.Text("No one in view", key="summary", size=16, color="#616161")
         self.status_list = ft.Column(
-            key="status_list", spacing=8, scroll=ft.ScrollMode.AUTO, expand=True
+            key="status_list", spacing=12, scroll=ft.ScrollMode.AUTO, expand=True
+        )
+
+        # --- settings live under the camera, behind the app-bar gear ---------
+        self.settings_button = ft.IconButton(
+            icon=ft.Icons.SETTINGS,
+            key="settings_button",
+            tooltip="Show settings",
+        )
+        self.settings_panel = ft.Container(
+            key="settings_panel",
+            visible=False,
+            bgcolor="#F5F5F5",
+            border_radius=8,
+            padding=12,
+            content=ft.Column(
+                [
+                    ft.Text("Settings", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Text("Uniform match threshold", size=14, color="#616161"),
+                    self.slider_label,
+                    self.threshold_slider,
+                    ft.Text("Glasses sensitivity", size=14, color="#616161"),
+                    self.glasses_slider_label,
+                    self.glasses_slider,
+                ],
+                spacing=6,
+            ),
+        )
+
+        self.appbar = ft.AppBar(
+            key="appbar",
+            title=ft.Text(
+                "Fiesta AI Vision Demo-Detection of Uniform and Eyewear",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color="#000000",
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+            actions=[self.settings_button],
+            bgcolor="#E8EAF6",
         )
 
         camera_pane = ft.Container(
-            col={"sm": 12, "md": 7},
+            expand=3,  # 60% of the width, per plan.txt
             content=ft.Column(
                 [
                     self.preview_box,
@@ -90,38 +180,38 @@ class AppView:
                         [self.fps_text, ft.Container(expand=True), self.camera_button],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
+                    self.settings_panel,
                 ],
                 spacing=8,
                 expand=True,
             ),
         )
+        self.camera_pane = camera_pane
         status_pane = ft.Container(
-            col={"sm": 12, "md": 5},
+            expand=2,  # 40% of the width
             content=ft.Column(
                 [
-                    ft.Text("Who is in view", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("Who is in view", size=22, weight=ft.FontWeight.BOLD),
                     self.summary,
                     ft.Divider(height=1),
+                    # The list claims every pixel left in the pane.
                     self.status_list,
-                    ft.Divider(height=1),
-                    ft.Text("Uniform match threshold", size=12, color="#616161"),
-                    self.slider_label,
-                    self.threshold_slider,
                 ],
-                spacing=8,
+                spacing=10,
                 expand=True,
             ),
         )
+        self.status_pane = status_pane
 
         self.root = ft.Column(
             [
-                ft.Text(
-                    "Fiesta Demo - School Uniform Check",
-                    size=20,
-                    weight=ft.FontWeight.BOLD,
-                ),
                 self.banner,
-                ft.ResponsiveRow([camera_pane, status_pane], spacing=16, expand=True),
+                ft.Row(
+                    [camera_pane, status_pane],
+                    spacing=16,
+                    expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+                ),
             ],
             spacing=12,
             expand=True,
@@ -131,15 +221,20 @@ class AppView:
 
     # -- updates -----------------------------------------------------------
     def set_frame(self, jpeg: bytes) -> None:
-        self.placeholder.visible = False
+        # Visibility only flips on the first frame: touching it on every frame
+        # makes the widget rebuild (and visibly blink) 12 times a second.
+        if not self._frame_shown:
+            self.placeholder.visible = False
+            self.preview.visible = True
+            self._frame_shown = True
         self.preview.src = jpeg
-        self.preview.visible = True
 
     def show_placeholder(self, message: str) -> None:
         """Hide the live image (no valid frame yet / camera stopped)."""
         self.placeholder.value = message
         self.placeholder.visible = True
         self.preview.visible = False
+        self._frame_shown = False
 
     def set_fps(self, fps: float, width: int, height: int) -> None:
         self.fps_text.value = f"{fps:.1f} FPS  |  {width}x{height}"
@@ -152,7 +247,12 @@ class AppView:
         self.banner.visible = False
 
     def set_threshold_label(self, threshold: float) -> None:
-        self.slider_label.value = f"{threshold:.2f} (loose = more 'in uniform')"
+        self.slider_label.value = f"{threshold:.2f} (higher = stricter, less 'in uniform')"
+
+    def set_glasses_threshold_label(self, threshold: float) -> None:
+        self.glasses_slider_label.value = (
+            f"{threshold:.2f} (lower = finds more glasses)"
+        )
 
     def render_people(self, rows: list[dict]) -> None:
         if not rows:
@@ -161,7 +261,7 @@ class AppView:
                 ft.Text(
                     "Walk into the camera view to be checked.",
                     key="empty_state",
-                    size=13,
+                    size=15,
                     color="#9E9E9E",
                 )
             ]
@@ -173,6 +273,7 @@ class AppView:
     def _person_card(self, row: dict) -> ft.Control:
         uniform = row.get("uniform") or CHECKING
         glasses = row.get("glasses") or "unknown"
+        colour = person_color(row.get("track_id") or 0)
         scores = []
         if row.get("uniform_score") is not None:
             scores.append(f"uniform {row['uniform_score']:.2f}")
@@ -181,27 +282,40 @@ class AppView:
 
         return ft.Container(
             key=f"person_{row['label']}",
-            padding=10,
-            border_radius=8,
+            padding=14,
+            border_radius=10,
             bgcolor="#F5F5F5",
+            border=ft.Border(left=ft.BorderSide(6, colour)),
             content=ft.Column(
                 [
-                    ft.Text(row["label"], size=16, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        row["label"],
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color=colour,
+                    ),
                     ft.Row(
                         [
                             self._badge(uniform, _UNIFORM_COLORS.get(uniform, "#546E7A")),
                             self._badge(glasses, _GLASSES_COLORS.get(glasses, "#546E7A")),
                         ],
-                        spacing=8,
+                        spacing=10,
                         wrap=True,
                     ),
                     ft.Text(
                         "  ".join(scores) or "checking...",
-                        size=11,
+                        size=13,
                         color="#757575",
                     ),
+                    ft.Text(
+                        row.get("detail") or "",
+                        size=12,
+                        color="#9E9E9E",
+                        max_lines=3,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
                 ],
-                spacing=6,
+                spacing=8,
             ),
         )
 
@@ -209,7 +323,12 @@ class AppView:
     def _badge(text: str, color: str) -> ft.Control:
         return ft.Container(
             bgcolor=color,
-            border_radius=4,
-            padding=ft.Padding(left=8, top=3, right=8, bottom=3),
-            content=ft.Text(text, size=12, color="#FFFFFF"),
+            border_radius=8,
+            padding=ft.Padding(left=14, top=7, right=14, bottom=7),
+            content=ft.Text(
+                text,
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color="#FFFFFF",
+            ),
         )

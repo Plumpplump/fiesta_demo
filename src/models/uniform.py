@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """School-uniform verdict from a torso crop.
 
 Two independent signals:
@@ -17,7 +18,15 @@ from pathlib import Path
 import numpy as np
 
 from . import constants as C
-from .clip import ClipEncoder, PromptBank, load_bgr, normalise
+from .clip import (
+    ClipEncoder,
+    PromptBank,
+    level_probability,
+    load_bgr,
+    normalise,
+    reference_probability,
+    softmax_pair,
+)
 from .types import IN_UNIFORM, NOT_IN_UNIFORM, UNSURE
 
 
@@ -26,6 +35,10 @@ class Verdict:
     label: str
     score: float | None = None
     detail: str = ""
+    # Colour evidence from the same crop, so a smoothed verdict can be
+    # re-decided later without re-reading the frame.
+    white_ratio: float | None = None
+    red_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -48,41 +61,78 @@ def color_profile(crop_bgr: np.ndarray) -> tuple[float, float]:
 
 
 def decide_uniform(
-    best_similarity: float | None,
-    text_margin: float | None,
+    probability: float | None,
     white_ratio: float,
     red_ratio: float,
-    similarity_threshold: float = C.UNIFORM_SIM_THRESHOLD,
-    unsure_margin: float = C.UNIFORM_SIM_UNSURE_MARGIN,
+    similarity_threshold: float = C.UNIFORM_PROB_THRESHOLD,
+    unsure_margin: float = C.UNIFORM_PROB_UNSURE_MARGIN,
     white_min: float = C.UNIFORM_WHITE_RATIO_MIN,
     red_min: float = C.UNIFORM_RED_RATIO_MIN,
 ) -> Verdict:
-    """Pure decision rule, so the thresholds can be tested without a model."""
+    """Pure decision rule, so the thresholds can be tested without a model.
+
+    ``probability`` is P(uniform) in 0..1 from the prompt level fused with the
+    reference-photo cosine. ``None`` means "no model": fall back to colour.
+
+    Colour is *advisory* once a model is present. Blocking a confident verdict
+    because the torso is not white made the red/PE uniform read "unsure"; only
+    people are classified, so the colour guard has little left to protect.
+    """
     has_white = white_ratio >= white_min
     has_trim = red_ratio >= red_min
+    colour = f"white {white_ratio:.2f}, red {red_ratio:.2f}"
 
-    if best_similarity is None and text_margin is None:
+    if probability is None:
         if has_white:
-            return Verdict(IN_UNIFORM, None, "colour only: white shirt")
-        return Verdict(NOT_IN_UNIFORM, None, "colour only: no white shirt")
+            return Verdict(IN_UNIFORM, None, f"colour only: white shirt ({colour})")
+        return Verdict(NOT_IN_UNIFORM, None, f"colour only: no white shirt ({colour})")
 
-    score = best_similarity if best_similarity is not None else text_margin
-    assert score is not None
-
-    if score >= similarity_threshold:
-        if not has_white and score < similarity_threshold + 0.15:
-            return Verdict(
-                UNSURE,
-                score,
-                f"model says uniform ({score:.2f}) but the torso is not white",
-            )
+    if probability >= similarity_threshold:
         trim = " with red trim" if has_trim else ""
-        return Verdict(IN_UNIFORM, score, f"matched reference{trim} ({score:.2f})")
+        return Verdict(
+            IN_UNIFORM,
+            probability,
+            f"matched a uniform prompt{trim} ({probability:.2f}; {colour})",
+        )
 
-    if score >= similarity_threshold - unsure_margin:
-        return Verdict(UNSURE, score, f"borderline match ({score:.2f})")
+    if probability >= similarity_threshold - unsure_margin:
+        return Verdict(UNSURE, probability, f"borderline match ({probability:.2f}; {colour})")
 
-    return Verdict(NOT_IN_UNIFORM, score, f"no reference match ({score:.2f})")
+    return Verdict(NOT_IN_UNIFORM, probability, f"no uniform match ({probability:.2f}; {colour})")
+
+
+def text_probability(
+    uniform_cos: float, casual_cos: float | None = None
+) -> float:
+    """P(uniform) from the prompts: level x gap.
+
+    Each alone failed on live data: the level alone let a white non-uniform top
+    through (u=0.30, same as a real uniform), the gap alone let an ordinary
+    portrait through (u=0.22 vs c=0.21 -> gap probability 0.73). Requiring both
+    - "looks like a uniform" AND "looks more uniform than casual" - separates
+    the two people in the webcam log cleanly.
+    """
+    level = level_probability(
+        uniform_cos, C.UNIFORM_TEXT_COS_MIDPOINT, C.UNIFORM_TEXT_COS_SLOPE
+    )
+    gap = softmax_pair(uniform_cos, casual_cos) if casual_cos is not None else 1.0
+    return level * gap
+
+
+def fuse_probabilities(
+    text: float | None, reference: float | None
+) -> float | None:
+    """Weighted mean, text-heavy; the reference only confirms.
+
+    Reference photos are product cut-outs, so a casual white top reached 0.56
+    cosine (p=0.88). A max() let that outvote prompts that said "casual"; the
+    weighted mean keeps the reference as confirmation instead of an override.
+    """
+    if text is None:
+        return reference
+    if reference is None:
+        return text
+    return C.UNIFORM_TEXT_WEIGHT * text + (1.0 - C.UNIFORM_TEXT_WEIGHT) * reference
 
 
 class UniformClassifier:
@@ -125,33 +175,65 @@ class UniformClassifier:
         if self.encoder is not None:
             embedding = self.encoder.embed_image(torso_bgr)
 
-        best_similarity: float | None = None
-        best_name = ""
+        # Two signals: the prompt level x gap (dominant) and the reference-photo
+        # cosine (confirmation). A weighted mean rather than max: a casual white
+        # top reached 0.56 against the product cut-outs, and max let that
+        # reference outvote prompts that clearly said "casual".
+        probability: float | None = None
+        signals: list[str] = []
+
+        if embedding is not None and self.prompts is not None and self.prompts.available:
+            uniform_match = self.prompts.best_match(embedding, IN_UNIFORM)
+            casual_match = self.prompts.best_match(embedding, NOT_IN_UNIFORM)
+            if uniform_match is not None:
+                # Level x gap: it must look like a uniform AND unlike casual
+                # clothes. Each alone failed on live data (see text_probability).
+                text = text_probability(
+                    uniform_match[0],
+                    casual_match[0] if casual_match is not None else None,
+                )
+                probability = text
+                casual_note = (
+                    f" vs '{casual_match[1]}' {casual_match[0]:.2f}"
+                    if casual_match is not None
+                    else ""
+                )
+                signals.append(
+                    f"text {text:.2f} "
+                    f"('{uniform_match[1]}' {uniform_match[0]:.2f}{casual_note})"
+                )
+
         if self.ready and embedding is not None:
+            best_similarity: float | None = None
+            best_name = ""
             for name, reference_embedding in self._embeddings:
                 similarity = float(np.dot(normalise(embedding), reference_embedding))
                 if best_similarity is None or similarity > best_similarity:
                     best_similarity, best_name = similarity, name
-
-        text_margin: float | None = None
-        if self.prompts is not None and self.prompts.available and embedding is not None:
-            scores = self.prompts.label_scores(embedding)
-            if IN_UNIFORM in scores and NOT_IN_UNIFORM in scores:
-                text_margin = scores[IN_UNIFORM] - scores[NOT_IN_UNIFORM]
+            if best_similarity is not None:
+                reference_p = reference_probability(best_similarity)
+                probability = fuse_probabilities(probability, reference_p)
+                signals.append(
+                    f"reference {best_name} {best_similarity:.2f} -> {reference_p:.2f}"
+                )
 
         effective_threshold = (
-            C.UNIFORM_SIM_THRESHOLD if threshold is None else threshold
+            C.UNIFORM_PROB_THRESHOLD if threshold is None else threshold
         )
         verdict = decide_uniform(
-            best_similarity,
-            text_margin,
+            probability,
             white_ratio,
             red_ratio,
             similarity_threshold=effective_threshold,
         )
-        if best_name:
-            return Verdict(verdict.label, verdict.score, f"{best_name}: {verdict.detail}")
-        return verdict
+        detail = f"{'; '.join(signals)} | {verdict.detail}" if signals else verdict.detail
+        return Verdict(
+            verdict.label,
+            verdict.score,
+            detail,
+            white_ratio=white_ratio,
+            red_ratio=red_ratio,
+        )
 
 
 def reference_dir(assets_root: Path) -> Path | None:

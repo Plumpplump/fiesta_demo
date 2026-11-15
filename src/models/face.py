@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Face detection (OpenCV YuNet) used to locate the eye area.
 
 YOLO gives us a person box, not eyes. YuNet returns the right/left eye points
@@ -44,22 +45,42 @@ class FaceDetector:
         return [faces[index] for index in range(len(faces))]
 
 
-def pick_face(faces: list[np.ndarray], person_box: Box) -> np.ndarray | None:
-    """Choose the face inside a person box, preferring the head area."""
+def face_box(face: np.ndarray) -> Box:
+    """YuNet row -> corner box ``(x1, y1, x2, y2)``.
+
+    YuNet returns ``[x, y, w, h, ...]``; treating ``w``/``h`` as ``x2``/``y2``
+    crops a sliver of the forehead and anchors the shirt band above the face.
+    """
+    x, y, w, h = (float(v) for v in face[:4])
+    return (x, y, x + w, y + h)
+
+
+def pick_face(
+    faces: list[np.ndarray], person_box: Box, margin: float = 0.10
+) -> np.ndarray | None:
+    """Largest face whose centre lies inside the (slightly expanded) person box.
+
+    The sibling project's rule, and it is more robust than "nearest the head
+    area" when two people stand close together: a big neighbouring face cannot
+    be borrowed by the wrong person.
+    """
     x1, y1, x2, y2 = person_box
     width = max(1.0, x2 - x1)
     height = max(1.0, y2 - y1)
-    target_x = x1 + width / 2.0
-    target_y = y1 + 0.15 * height
+    pad_x = width * margin
+    pad_y = height * margin
 
     best: np.ndarray | None = None
-    best_distance: float | None = None
+    best_area = 0.0
     for face in faces:
         fx, fy, fw, fh = (float(v) for v in face[:4])
         centre_x, centre_y = fx + fw / 2.0, fy + fh / 2.0
-        if not (x1 <= centre_x <= x2 and y1 <= centre_y <= y2):
+        if not (
+            x1 - pad_x <= centre_x <= x2 + pad_x
+            and y1 - pad_y <= centre_y <= y2 + pad_y
+        ):
             continue
-        distance = ((centre_x - target_x) / width) ** 2 + ((centre_y - target_y) / height) ** 2
-        if best_distance is None or distance < best_distance:
-            best, best_distance = face, distance
+        area = fw * fh
+        if area > best_area:
+            best, best_area = face, area
     return best

@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 [project]
 name = "fiesta-demo"
 version = "0.1.0"
@@ -5,7 +6,7 @@ description = "Detect people in a live camera view and label them as wearing the
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Flet developer", email = "you@example.com" }
+    { name = "David Li" }
 ]
 dependencies = [
     "flet>=1.0.0",
@@ -33,6 +34,9 @@ export = [
     "torch>=2.4",
     "ultralytics>=8.3",
     "open-clip-torch>=2.26",
+    # open_clip's HF tokenizer path imports transformers; without it the text
+    # tower (and therefore the prompt banks) cannot be exported.
+    "transformers>=4.40",
 ]
 
 # NOTE: on this Windows machine the dependencies are installed into the shared

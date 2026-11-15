@@ -1,10 +1,11 @@
+# Author: David Li, SISHK
 import flet as ft
 
 from controllers.app_controller import AppController
 
 
 def main(page: ft.Page):
-    page.title = "Fiesta Demo - School Uniform Check"
+    page.title = "Fiesta AI Vision Demo-Detection of Uniform and Eyewear"
     page.padding = 16
 
     controller = AppController(page)

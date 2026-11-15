@@ -1,6 +1,16 @@
+# Author: David Li, SISHK
 import os
 
 import pytest
+
+# The integration module imports `flet.testing`, which needs the `flet[test]`
+# extra (scikit-image and friends). Without it, plain `pytest` must still be a
+# clean fast run instead of a collection error.
+collect_ignore: list[str] = []
+try:  # pragma: no cover - depends on the local environment
+    import flet.testing  # noqa: F401
+except Exception:  # pragma: no cover
+    collect_ignore.append("test_main.py")
 
 
 def pytest_collection_modifyitems(config, items):

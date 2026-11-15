@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """YOLO11n person detector running on onnxruntime.
 
 The .onnx file is produced once by ``scripts/export_models.py``; nothing here
@@ -37,14 +38,20 @@ def providers() -> list[str]:
     return chosen or ["CPUExecutionProvider"]
 
 
-def create_session(model_path: str | Path):
+def create_session(model_path: str | Path, prefer_cpu: bool = False):
     import onnxruntime as ort
 
     path = Path(model_path)
     if not path.is_file():
         raise ModelUnavailable(f"model file not found: {path}")
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # One worker per core oversubscribes: the camera thread and Flet are also
+    # running. The measured sibling project caps this at 4.
+    options.intra_op_num_threads = max(1, min(4, os.cpu_count() or 1))
+    chosen = ["CPUExecutionProvider"] if prefer_cpu else providers()
     try:
-        return ort.InferenceSession(str(path), providers=providers())
+        return ort.InferenceSession(str(path), sess_options=options, providers=chosen)
     except Exception as exc:  # pragma: no cover - depends on local runtime
         raise ModelUnavailable(f"could not load {path.name}: {exc}") from exc
 

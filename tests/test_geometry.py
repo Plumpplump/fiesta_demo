@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Geometry is the most reused logic in the project, so it carries the tests."""
 
 import numpy as np
@@ -7,6 +8,7 @@ from models.geometry import (
     clip_box,
     crop,
     eye_box_from_face,
+    face_anchored_torso_box,
     iou,
     letterbox,
     nms,
@@ -69,11 +71,30 @@ def test_torso_is_the_middle_of_the_person_box():
 
 def test_eye_box_from_yunet_landmarks():
     face = np.array([100, 100, 80, 80, 120, 130, 160, 130, 140, 160, 120, 180, 160, 180, 0.9])
-    box = eye_box_from_face(face, padding=0.5)
+    box = eye_box_from_face(face)
     assert box is not None
     x1, y1, x2, y2 = box
     assert x1 < 120 and x2 > 160  # covers both eyes with padding
     assert y1 < 130 < y2
+
+
+def test_eye_box_never_leaves_the_face_box():
+    face = np.array([100, 100, 80, 80, 120, 130, 160, 130, 140, 160, 120, 180, 160, 180, 0.9])
+    x1, y1, x2, y2 = eye_box_from_face(face, padding=3.0, height_ratio=3.0)
+    assert (x1, y1, x2, y2) == (100.0, 100.0, 180.0, 180.0)
+
+
+def test_eye_box_height_ignores_head_tilt():
+    # One eye 25 px lower than the other: the box must stay a strip, not a slab
+    # covering half the face (the old code used abs(eye_dy) as padding).
+    level = np.array([100, 100, 200, 200, 140, 150, 220, 150, 180, 180, 0, 0, 0, 0, 0.9])
+    tilted = np.array([100, 100, 200, 200, 140, 140, 220, 165, 180, 180, 0, 0, 0, 0, 0.9])
+
+    _, level_y1, _, level_y2 = eye_box_from_face(level)
+    _, tilt_y1, _, tilt_y2 = eye_box_from_face(tilted)
+
+    assert (tilt_y2 - tilt_y1) <= (level_y2 - level_y1) + 30
+    assert (level_y2 - level_y1) < 0.6 * 200  # stays an eye strip
 
 
 def test_eye_box_rejects_degenerate_face():
@@ -85,3 +106,22 @@ def test_crop_is_bounded_by_the_image():
     image = np.zeros((100, 100, 3), dtype=np.uint8)
     assert crop(image, (-50, -50, 50, 50)).shape == (50, 50, 3)
     assert crop(image, (200, 200, 300, 300)).size == 0
+
+def test_face_anchored_torso_starts_below_the_chin():
+    person = (100.0, 100.0, 400.0, 600.0)
+    face = (170.0, 110.0, 230.0, 170.0)  # 60 px tall, chin at y=170
+
+    band = face_anchored_torso_box(person, face)
+
+    assert band is not None
+    x1, y1, x2, y2 = band
+    assert y1 > face[3]  # below the chin, never on the face
+    assert y2 > y1
+    assert y2 <= person[3]  # stays inside the person box
+    assert x1 < person[0] and x2 > person[2]  # a little side margin
+
+
+def test_face_anchored_torso_rejects_a_band_that_is_too_small():
+    person = (100.0, 100.0, 400.0, 160.0)
+    tiny_face = (170.0, 105.0, 180.0, 115.0)
+    assert face_anchored_torso_box(person, tiny_face) is None

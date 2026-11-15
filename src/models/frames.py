@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Frame helper functions: preview encoding and drawing overlays."""
 
 from __future__ import annotations
@@ -5,6 +6,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import constants as C
+from .geometry import clip_box
 from .types import Track
 
 
@@ -34,13 +36,16 @@ def draw_overlay(frame_bgr: np.ndarray, tracks: list[Track]) -> np.ndarray:
     """Person / torso / eye boxes plus a Person N label, drawn in place."""
     import cv2
 
+    height, width = frame_bgr.shape[:2]
     for track in tracks:
-        x1, y1, x2, y2 = (int(v) for v in track.box)
+        # Every box is clipped to the frame: a face at the edge or a torso
+        # margin must not paint outside the picture.
+        x1, y1, x2, y2 = (int(v) for v in clip_box(track.box, width, height))
         cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 200, 255), 2)
-        tx1, ty1, tx2, ty2 = (int(v) for v in track.torso_box)
+        tx1, ty1, tx2, ty2 = (int(v) for v in clip_box(track.torso_box, width, height))
         cv2.rectangle(frame_bgr, (tx1, ty1), (tx2, ty2), (60, 180, 75), 2)
         if track.eye_box is not None:
-            ex1, ey1, ex2, ey2 = (int(v) for v in track.eye_box)
+            ex1, ey1, ex2, ey2 = (int(v) for v in clip_box(track.eye_box, width, height))
             cv2.rectangle(frame_bgr, (ex1, ey1), (ex2, ey2), (255, 120, 0), 2)
         label = f"{C.PERSON_LABEL_PREFIX}{track.label_index}"
         cv2.putText(

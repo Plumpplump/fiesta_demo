@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """OpenCV camera capture for every platform.
 
 ``flet_camera`` refuses to run on desktop (its ``before_update`` raises
@@ -69,22 +70,32 @@ class OpenCvCamera:
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        # Each run gets its own stop flag: a thread left over from an earlier
+        # start/stop must never fall through into the *new* capture, otherwise
+        # two readers alternate frames and the preview flickers.
+        stop = threading.Event()
+
         self._capture = capture
         self.error = None
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
+        self._stop = stop
+        self._thread = threading.Thread(
+            target=self._run, args=(capture, stop), name="camera", daemon=True
+        )
         self._thread.start()
         return True
 
     def stop(self) -> None:
-        self._stop.set()
+        stop = self._stop
+        stop.set()
         thread = self._thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=1.0)
         self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
         capture = self._capture
         self._capture = None
         if capture is not None:
+            # Unblocks a read() that a slow AVFoundation call is still holding;
+            # _run() releases its own capture on the way out too.
             capture.release()
         with self._lock:
             self._frame = None
@@ -113,22 +124,26 @@ class OpenCvCamera:
             span = self._stamps[-1] - self._stamps[0]
             return (len(self._stamps) - 1) / span if span > 0 else 0.0
 
-    def _run(self) -> None:
+    def _run(self, capture, stop: threading.Event) -> None:
         failures = 0
-        while not self._stop.is_set():
-            capture = self._capture
-            if capture is None:
-                break
-            ok, frame = capture.read()
-            if not ok or frame is None:
-                failures += 1
-                if failures > 100:
-                    self.error = "camera stopped returning frames"
-                    break
-                time.sleep(0.02)
-                continue
-            failures = 0
-            with self._lock:
-                self._frame = frame
-                self._frame_id += 1
-                self._stamps.append(time.monotonic())
+        try:
+            while not stop.is_set() and stop is self._stop:
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    failures += 1
+                    if failures > 100:
+                        self.error = "camera stopped returning frames"
+                        break
+                    time.sleep(0.02)
+                    continue
+                failures = 0
+                with self._lock:
+                    # A newer start() may have taken over while we were
+                    # blocking in read(); never publish stale frames then.
+                    if stop is not self._stop:
+                        break
+                    self._frame = frame
+                    self._frame_id += 1
+                    self._stamps.append(time.monotonic())
+        finally:
+            capture.release()

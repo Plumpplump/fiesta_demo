@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """YOLO output decoding - tested with synthetic tensors, no model file needed."""
 
 import numpy as np

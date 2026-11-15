@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Resolve bundled asset paths in dev and in a packaged Flet build."""
 
 from __future__ import annotations

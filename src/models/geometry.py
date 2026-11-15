@@ -1,3 +1,4 @@
+# Author: David Li, SISHK
 """Pure geometry helpers: letterboxing, box maths, NMS, crop derivation.
 
 Deliberately Flet-free and side-effect free so every rule here can be unit
@@ -128,26 +129,70 @@ def sub_box(
     return (x1 + left * w, y1 + top * h, x1 + right * w, y1 + bottom * h)
 
 
-def eye_box_from_face(face: np.ndarray, padding: float = 0.9) -> Box | None:
-    """Build an eye strip from a YuNet row.
+def eye_box_from_face(
+    face: np.ndarray,
+    padding: float = 0.45,
+    height_ratio: float = 0.50,
+) -> Box | None:
+    """Eye strip built from the YuNet landmarks, always inside the face box.
 
     YuNet returns ``[x, y, w, h, re_x, re_y, le_x, le_y, nose..., mouth...,
     score]`` in absolute pixels; the right/left eye points are items 4..7.
+
+    ``padding`` is the half-width added on each side and ``height_ratio`` the
+    half-height, both in units of the inter-eye distance. Sizing everything by
+    the eye distance keeps the strip on the eyes. The previous version added
+    0.9 eye distances per side and let the *tilt* between the eyes
+    (``abs(eye_dy)``) inflate the height, so the box wandered onto ears/hair
+    and off the frame. The box is intersected with the face box, so it can
+    never leave the face.
     """
     if face is None or len(face) < 8:
         return None
+    fx, fy, fw, fh = (float(v) for v in face[:4])
     right_eye = (float(face[4]), float(face[5]))
     left_eye = (float(face[6]), float(face[7]))
-    eye_y = (right_eye[1] + left_eye[1]) / 2.0
     eye_dx = abs(left_eye[0] - right_eye[0])
     if eye_dx <= 1.0:
         return None
-    eye_dy = abs(left_eye[1] - right_eye[1])
-    pad_x = padding * eye_dx
-    pad_y = padding * max(eye_dy, 0.28 * eye_dx)
-    return (
-        min(right_eye[0], left_eye[0]) - pad_x,
-        eye_y - pad_y,
-        max(right_eye[0], left_eye[0]) + pad_x,
-        eye_y + pad_y,
-    )
+    eye_y = (right_eye[1] + left_eye[1]) / 2.0
+    half_w = padding * eye_dx
+    half_h = height_ratio * eye_dx
+    x1 = max(min(right_eye[0], left_eye[0]) - half_w, fx)
+    y1 = max(eye_y - half_h, fy)
+    x2 = min(max(right_eye[0], left_eye[0]) + half_w, fx + fw)
+    y2 = min(eye_y + half_h, fy + fh)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return (x1, y1, x2, y2)
+
+def face_anchored_torso_box(
+    person_box: Box,
+    face_box: Box,
+    face_heights: float = 2.0,
+    min_height: float = 32.0,
+) -> Box | None:
+    """Shirt band measured from the chin instead of from the person box.
+
+    Guessing the shirt from the person box fails whenever the pose changes
+    (close-up, arms out, leaning). A YuNet face box gives the head, so the
+    band starts just below the chin and reaches ``face_heights`` face heights
+    down: collar, badge and chest in one crop. Returns ``None`` when the
+    resulting band is too small to classify honestly.
+    """
+    px1, _py1, px2, py2 = person_box
+    fx1, fy1, fx2, fy2 = face_box
+    face_height = max(1.0, fy2 - fy1)
+    top = fy2 + 0.05 * face_height
+    bottom = min(py2, fy2 + face_heights * face_height)
+    if bottom - top < min_height or px2 <= px1:
+        return None
+    margin = 0.08 * (px2 - px1)
+    return (px1 - margin, top, px2 + margin, bottom)
+
+
+def face_crop_box(face_box: Box, margin: float = 0.0) -> Box:
+    """Face box grown by a relative margin; the glasses classifier's input."""
+    x1, y1, x2, y2 = face_box
+    pad = margin * max(x2 - x1, y2 - y1)
+    return (x1 - pad, y1 - pad, x2 + pad, y2 + pad)
